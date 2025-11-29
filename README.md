@@ -28,8 +28,8 @@ A command-line utility designed to extract comprehensive analysis data from **ID
 
 2. Install the Tool:  
    Run the provided installer to verify dependencies and create a global command:  
-   chmod \+x install.sh  
-   sudo ./install.sh
+   chmod \+x setup.sh  
+   sudo ./setup.sh
 
 ## **Usage**
 
