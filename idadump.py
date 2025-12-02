@@ -41,7 +41,7 @@ Your task is to analyze this data and produce a comprehensive report (`report.md
 * **Constraint:** Do not go into deep detail about individual functions here; focus on the "Big Picture" logic and intended behavior.
 
 **Part 2: Deep Analysis & Vulnerability Identification**
-* **Function Analysis:** Go through the provided functions carefully. Describe the primary functions one by one specifying their purpouse and how they behave. Highlight any that behave in unusual or suspicious ways.
+* **Function Analysis:** Go through the provided functions carefully. Highlight any that behave in unusual or suspicious ways.
 * **Vulnerability Spotting:** Identify bugs (Buffer Overflows, Format Strings, Logic Errors, Race Conditions). Describe *where* they are (function/line) and *why* they are vulnerabilities, but save the full exploit chain/method for Part 3.
 * **Structure Recovery:** Provide a **visual description** of all structs you identify during analysis (e.g., "Struct at `v4`: Offset 0=int, Offset 8=char*"). Format these clearly so they can be manually added to IDA's Local Types window.
 
@@ -49,9 +49,91 @@ Your task is to analyze this data and produce a comprehensive report (`report.md
 * **If Binary Exploitation (Pwn):**
     * **In-Depth Analysis:** Detail exactly how to trigger the vulnerability.
     * **Attack Flow:** Provide both a **High-Level** description (e.g., "Leak libc -> ROP to system") and a **Low-Level** description (e.g., "Overwrite return address at offset 72 with gadget X").
+    * **Assumption Check:** Explicitly state what you are assuming might be wrong (e.g., "Assuming remote server uses Ubuntu 22.04 libc").
 * **If Reverse Engineering (Rev):**
     * **Solver Logic:** Explain the algorithm used to obfuscate the flag.
     * **Strategy:** Describe your ideas on how to obtain the cleartext value (e.g., "Use Z3 to solve the system of linear equations defined in `sub_40100`").
+
+---
+
+### SOLUTION SCRIPT (solve.py)
+
+Write a complete, runnable Python script based on the strategy in Part 3.
+
+* **For Pwn:** Use `pwntools`. Include boilerplate (`p = process()` or `remote()`).
+* **For Rev:** Use `z3` (theorem prover) or standard Python math to implement the solver logic.
+* **Placeholders:** You are working from a static dump. If a value is dynamic (remote IP) or missing (unknown gadget address), use a clear placeholder like `GADGET = 0xDEADBEEF # TODO: Verify`.
+* **Comments:** Heavily comment the code, referencing the logic described in Part 3.
+
+---
+
+### MISSING INFO
+At the end, list any specific memory segments, missing functions, or ambiguous data that prevents a guaranteed solution.
+"""
+
+# --- ACTUATOR ADDITIONS ---
+ACTUATOR_PROMPT_APPEND = """
+---
+
+### PART 4: Database Improvements (Actuator JSON)
+Since you have access to Disassembly, you can suggest direct improvements to the IDA Database to make it clearer for the analyst.
+If you identify functions to rename, comments to add, or structs to define:
+1. **Generate a JSON block** at the very end of your response.
+2. Strictly follow the **Actuator JSON API** documented in the `<actuator_documentation>` section below.
+3. This will allow the analyst to automatically apply your reverse engineering findings to the database.
+"""
+
+ACTUATOR_DOCS = """# IDA Actuator JSON API
+
+If you identify opportunities to improve the database (renaming functions, defining structures, or commenting), output a JSON block at the end of your response.
+
+**Rules:**
+1. Use **Hexadecimal Strings** for addresses (e.g., "0x401000").
+2. For Structs, use valid **C Syntax**.
+3. Do not include comments inside the JSON itself (standard JSON only).
+
+## JSON Schema
+
+```json
+{
+  "actions": [
+    {
+      "type": "rename",
+      "address": "0x401234",
+      "name": "rc4_encrypt_loop"
+    },
+    {
+      "type": "comment",
+      "address": "0x401234",
+      "content": "XORs input byte with key byte",
+      "repeatable": true
+    },
+    {
+      "type": "create_struct",
+      "name": "PlayerState",
+      "definition": "struct PlayerState { int id; char username[32]; int hp; };"
+    }
+  ]
+}
+```
+
+## Action Types
+
+### 1. `rename`
+Renames a function or global variable.
+* `address`: The effective address (EA) from the dump.
+* `name`: The new name (no spaces, use underscores).
+
+### 2. `create_struct`
+Defines a C structure in the Local Types window.
+* `name`: The name of the struct.
+* `definition`: The full C-style struct definition string. Ensure you use standard types (`int`, `char`, `long`, `uint8_t`, etc.).
+
+### 3. `comment`
+Adds a comment to a specific instruction or function start.
+* `address`: Where to place the comment.
+* `content`: The text.
+* `repeatable`: (Boolean) If true, the comment appears in cross-references.
 """
 
 def get_target_file(binary_path):
@@ -329,7 +411,17 @@ def main():
         
         # Embed prompt instructions as XML data
         if args.prompt:
-            f.write(f'  <system_prompt>\n    {cdata(MASTER_PROMPT_TEXT)}\n  </system_prompt>\n')
+            final_prompt = MASTER_PROMPT_TEXT
+            
+            # Conditionally add Actuator Instructions ONLY if Prompt AND Disasm are True
+            if args.disasm:
+                final_prompt += ACTUATOR_PROMPT_APPEND
+                
+            f.write(f'  <system_prompt>\n    {cdata(final_prompt)}\n  </system_prompt>\n')
+            
+            # Conditionally add Actuator Documentation ONLY if Prompt AND Disasm are True
+            if args.disasm:
+                f.write(f'  <actuator_documentation>\n    {cdata(ACTUATOR_DOCS)}\n  </actuator_documentation>\n')
         
         if args.description:
             f.write(f'  <challenge_description>\n    {cdata(args.description)}\n  </challenge_description>\n')
