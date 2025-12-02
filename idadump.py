@@ -29,50 +29,29 @@ except ImportError as e:
     sys.exit(1)
 
 # --- THE MASTER PROMPT ---
-MASTER_PROMPT_TEXT = """You are an expert CTF (Capture The Flag) player specializing in Reverse Engineering and Binary Exploitation. I am going to provide you with:
-1. A **Challenge Description** (Optional).
-2. An **IDA Pro Dump**: This contains the memory layout, security mitigations, imports, global data, and decompiled functions of the target binary.
+MASTER_PROMPT_TEXT = """You are an expert CTF (Capture The Flag) player specializing in Reverse Engineering and Binary Exploitation. You will be provided with an XML dump of an IDA Pro database containing memory layout, security mitigations, imports, global data, structures, and decompiled functions.
 
-Your task is to analyze this data and produce two specific files: `report.md` and `solve.py`.
+Your task is to analyze this data and produce a comprehensive report (`report.md`) and a solution script (`solve.py`).
 
-### PART 1: report.md
-Create a Markdown file with the following three distinct sections:
+### REPORT STRUCTURE (report.md)
 
-**1. High-Level Analysis (The "Blue Team" View)**
-* Walk through the binary's execution flow function by function (focusing on `main` and user-interaction functions).
-* Explain what the program *intends* to do with user input (e.g., "It takes a username, hashes it using MD5, and compares it to a stored global").
-* **Do not** mention vulnerabilities in this section. Describe the logic as if you were the developer documentation.
+**Part 1: High-Level Overview**
+* **Goal:** Explain what the binary does at a macro level.
+* **User Input Flow:** Describe the intended flow of user input (e.g., "Input is read via `read`, passed to a parser, then hashed").
+* **Constraint:** Do not go into deep detail about individual functions here; focus on the "Big Picture" logic and intended behavior.
 
-**2. Vulnerability Analysis (The "Red Team" View)**
-* Identify specific security flaws (Stack Buffer Overflow, Format String, Heap corruption, Logic errors, Integer overflow, weak crypto, etc.).
-* Cite the specific function name and variable (or line of logic) where the flaw occurs.
-* Explain *why* it is vulnerable based on the provided dump (e.g., "The `read` at `sub_40120` reads 0x100 bytes into a 0x50 byte buffer").
+**Part 2: Deep Analysis & Vulnerability Identification**
+* **Function Analysis:** Go through the provided functions carefully. Describe the primary functions one by one specifying their purpouse and how they behave. Highlight any that behave in unusual or suspicious ways.
+* **Vulnerability Spotting:** Identify bugs (Buffer Overflows, Format Strings, Logic Errors, Race Conditions). Describe *where* they are (function/line) and *why* they are vulnerabilities, but save the full exploit chain/method for Part 3.
+* **Structure Recovery:** Provide a **visual description** of all structs you identify during analysis (e.g., "Struct at `v4`: Offset 0=int, Offset 8=char*"). Format these clearly so they can be manually added to IDA's Local Types window.
 
-**3. Exploit Strategy**
-* Describe **in plain English** (no code) how you intend to capture the flag.
-* If this is a Pwn challenge: Explain the chain (e.g., "I will leak the canary, then calculating the base address, then overwrite the RET pointer to jump to `win()`").
-* If this is a Rev challenge: Explain the logic solver (e.g., "I will use z3 to constrain the input characters to match the equation checks in `check_flag`").
-
----
-
-### PART 2: solve.py
-Write a complete Python script to solve the challenge based on your strategy.
-
-**Rules for the Script:**
-* **Tool Selection:**
-    * If the Challenge Description implies a remote server or local exploitation (shell/RCE), use `pwntools`.
-    * If the challenge is about reversing an algorithm (keygen/password check), use `z3` (theorem prover) or standard Python math.
-* **Placeholders:** You are analyzing a static dump. If you need a value that is dynamic (like a remote server IP) or a memory address that was not included in the text dump, you **MUST** use a placeholder variable (e.g., `HOST = "TODO_ENTER_IP"`, `GADGET_ADDR = 0xDEADBEEF # TODO: Verify gadget offset`).
-* **Comments:** Add comments linking back to your `report.md` (e.g., `# Triggering the overflow described in Section 2`).
-* **Robustness:** Include standard boilerplate (`p = process('./binary')` or `remote()`).
-
----
-
-### PART 3: Missing Information
-At the very end of your response, answer this:
-* "Is there any specific memory segment, struct definition, or function assembly that is missing from this dump that prevents you from guaranteeing a solution?"
-
----
+**Part 3: The Win Strategy**
+* **If Binary Exploitation (Pwn):**
+    * **In-Depth Analysis:** Detail exactly how to trigger the vulnerability.
+    * **Attack Flow:** Provide both a **High-Level** description (e.g., "Leak libc -> ROP to system") and a **Low-Level** description (e.g., "Overwrite return address at offset 72 with gadget X").
+* **If Reverse Engineering (Rev):**
+    * **Solver Logic:** Explain the algorithm used to obfuscate the flag.
+    * **Strategy:** Describe your ideas on how to obtain the cleartext value (e.g., "Use Z3 to solve the system of linear equations defined in `sub_40100`").
 """
 
 def get_target_file(binary_path):
@@ -97,11 +76,6 @@ def get_target_file(binary_path):
             return c, True
 
     return abs_path, False
-
-def get_ptr_size():
-    return 8 if ida_ida.inf_get_app_bitness() == 64 else 4
-
-# --- Analysis Helpers ---
 
 def get_mitigations():
     """Performs a basic checksec-style analysis."""
@@ -150,11 +124,14 @@ def get_mitigations():
 
     return " | ".join(results)
 
+def cdata(content):
+    """Wraps content in CDATA for XML safety."""
+    return f"<![CDATA[{content}]]>"
+
+# === XML DUMPING FUNCTIONS ===
+
 def dump_segments(f):
-    f.write("\n" + "="*40 + "\n=== MEMORY LAYOUT (SEGMENTS) ===\n" + "="*40 + "\n")
-    f.write(f"{'Name':<20} {'Start':<12} {'End':<12} {'Perms':<6} {'Type'}\n")
-    f.write("-" * 65 + "\n")
-    
+    f.write('  <segments>\n')
     for n in range(ida_segment.get_segm_qty()):
         seg = ida_segment.getnseg(n)
         perm_str = ""
@@ -164,12 +141,13 @@ def dump_segments(f):
         
         seg_type = "CODE" if seg.type == ida_segment.SEG_CODE else \
                    "DATA" if seg.type == ida_segment.SEG_DATA else \
-                   "BSS " if seg.type == ida_segment.SEG_BSS else "UNK "
+                   "BSS" if seg.type == ida_segment.SEG_BSS else "UNK"
         
-        f.write(f"{ida_segment.get_segm_name(seg):<20} {hex(seg.start_ea):<12} {hex(seg.end_ea):<12} {perm_str:<6} {seg_type}\n")
+        f.write(f'    <segment name="{ida_segment.get_segm_name(seg)}" start="{hex(seg.start_ea)}" end="{hex(seg.end_ea)}" perms="{perm_str}" type="{seg_type}" />\n')
+    f.write('  </segments>\n')
 
 def dump_imports(f):
-    f.write("\n" + "="*40 + "\n=== IMPORTS ===\n" + "="*40 + "\n")
+    f.write('  <imports>\n')
     import_list = []
     def imp_cb(ea, name, ordinal):
         import_list.append((ea, name, ordinal))
@@ -178,61 +156,64 @@ def dump_imports(f):
     for i in range(ida_nalt.get_import_module_qty()):
         mod_name = ida_nalt.get_import_module_name(i)
         if not mod_name: continue
-        f.write(f"\n--- Module: {mod_name} ---\n")
+        f.write(f'    <module name="{mod_name}">\n')
         ida_nalt.enum_import_names(i, imp_cb)
         for ea, name, ordinal in import_list:
             display_name = name if name else f"#{ordinal}"
-            f.write(f"{hex(ea)}: {display_name}\n")
+            f.write(f'      <func addr="{hex(ea)}" name="{display_name}" />\n')
+        f.write('    </module>\n')
         import_list.clear()
+    f.write('  </imports>\n')
 
 def dump_exports(f):
-    f.write("\n" + "="*40 + "\n=== EXPORTS ===\n" + "="*40 + "\n")
+    f.write('  <exports>\n')
     for i in range(ida_entry.get_entry_qty()):
         ordinal = ida_entry.get_entry_ordinal(i)
         ea = ida_entry.get_entry(ordinal)
         name = ida_entry.get_entry_name(ordinal)
-        f.write(f"{hex(ea)}: {name} (Ordinal: {ordinal})\n")
+        f.write(f'    <export addr="{hex(ea)}" name="{name}" ordinal="{ordinal}" />\n')
+    f.write('  </exports>\n')
 
 def dump_strings(f):
-    f.write("\n" + "="*40 + "\n=== STRINGS ===\n" + "="*40 + "\n")
+    f.write('  <strings>\n')
     sc = idautils.Strings()
     for s in sc:
         content = str(s)
         if len(content) > 100: content = content[:97] + "..."
-        f.write(f"{hex(s.ea)}: {content}\n")
+        # Basic escaping for string content inside attribute
+        safe_content = content.replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
+        f.write(f'    <str addr="{hex(s.ea)}" value="{safe_content}" />\n')
+    f.write('  </strings>\n')
 
 def dump_structures(f):
-    f.write("\n" + "="*40 + "\n=== STRUCTURES & LOCAL TYPES ===\n" + "="*40 + "\n")
+    f.write('  <structures>\n')
     til = ida_typeinf.get_idati()
-    if not til:
-        f.write("// Error: Could not retrieve Type Information Library.\n")
-        return
-
-    qty = ida_typeinf.get_ordinal_limit(til)
-    for i in range(qty):
-        tinfo = ida_typeinf.tinfo_t()
-        if tinfo.get_numbered_type(til, i):
-            if tinfo.is_udt():
-                name = tinfo.get_type_name()
-                if not name: name = f"type_{i}"
+    if til:
+        qty = ida_typeinf.get_ordinal_limit(til)
+        for i in range(qty):
+            tinfo = ida_typeinf.tinfo_t()
+            if tinfo.get_numbered_type(til, i) and tinfo.is_udt():
+                name = tinfo.get_type_name() or f"type_{i}"
                 try:
                     c_decl = tinfo._print(name, ida_typeinf.PRTYPE_DEF | ida_typeinf.PRTYPE_MULTI | ida_typeinf.PRTYPE_SEMI)
                     if c_decl:
-                        f.write(f"\n// Type Ordinal: {i}\n{c_decl}\n")
+                        f.write(f'    <struct name="{name}" ordinal="{i}">\n')
+                        f.write(f'      <definition>{cdata(c_decl)}</definition>\n')
+                        f.write('    </struct>\n')
                 except: pass
+    f.write('  </structures>\n')
 
 def dump_global_data(f):
-    f.write("\n" + "="*40 + "\n=== GLOBAL VARIABLES & DATA ===\n" + "="*40 + "\n")
-    
+    f.write('  <global_data>\n')
     for n in range(ida_segment.get_segm_qty()):
         seg = ida_segment.getnseg(n)
         if seg.type not in [ida_segment.SEG_DATA, ida_segment.SEG_BSS]: continue
-
-        f.write(f"\n--- Segment: {ida_segment.get_segm_name(seg)} ---\n")
+        
+        f.write(f'    <segment_data name="{ida_segment.get_segm_name(seg)}">\n')
         for head in idautils.Heads(seg.start_ea, seg.end_ea):
             if not ida_bytes.is_data(ida_bytes.get_flags(head)): continue
             name = ida_name.get_name(head)
-            if not name: continue 
+            if not name: continue
             
             size = ida_bytes.get_item_size(head)
             val_str = ""
@@ -243,8 +224,10 @@ def dump_global_data(f):
             elif size == 4: val_str = hex(ida_bytes.get_dword(head))
             elif size == 8: val_str = hex(ida_bytes.get_qword(head))
             else: val_str = f"[Block of {size} bytes]"
-
-            f.write(f"{hex(head)}: {name} = {val_str}\n")
+            
+            f.write(f'      <item addr="{hex(head)}" name="{name}" size="{size}">{cdata(val_str)}</item>\n')
+        f.write('    </segment_data>\n')
+    f.write('  </global_data>\n')
 
 def is_boilerplate(func_name, seg_name):
     if seg_name in [".plt", ".plt.got", ".init", ".fini"]: return True
@@ -254,11 +237,9 @@ def is_boilerplate(func_name, seg_name):
     return False
 
 def dump_functions(f, dump_all_functions=False, include_disasm=False):
+    f.write('  <functions>\n')
     print("Dumping functions...")
     decomp_available = ida_hexrays.init_hexrays_plugin()
-    
-    if not decomp_available:
-        f.write("\n// [!] Hex-Rays Decompiler not available. Disassembly only.\n")
 
     for func_ea in idautils.Functions():
         func_obj = ida_funcs.get_func(func_ea)
@@ -273,45 +254,45 @@ def dump_functions(f, dump_all_functions=False, include_disasm=False):
                is_boilerplate(func_name, seg_name):
                 continue
 
-        f.write(f"\n\n{'='*60}\nFUNCTION: {func_name} ({hex(func_ea)})\n")
+        f.write(f'    <function name="{func_name}" addr="{hex(func_ea)}">\n')
         
+        # Callers
         xrefs = []
         for xref in idautils.XrefsTo(func_ea):
-            frm_name = ida_funcs.get_func_name(xref.frm)
-            if not frm_name: frm_name = f"loc_{xref.frm:x}"
+            frm_name = ida_funcs.get_func_name(xref.frm) or f"loc_{xref.frm:x}"
             xrefs.append(f"{hex(xref.frm)} ({frm_name})")
-        
         if xrefs:
-            f.write(f"Callers (Xrefs): {', '.join(xrefs[:10])}")
-            if len(xrefs) > 10: f.write(" ...")
-            f.write("\n")
-            
-        f.write(f"{'='*60}\n")
-        
-        if include_disasm:
-            f.write("\n--- Disassembly ---\n")
-            for head in idautils.FuncItems(func_ea):
-                disasm = idc.GetDisasm(head)
-                f.write(f"{hex(head)}: {disasm}\n")
+            f.write(f'      <callers>{cdata(", ".join(xrefs[:15]))}</callers>\n')
 
+        # Disassembly
+        if include_disasm:
+            f.write('      <disassembly>\n')
+            f.write(cdata('\n'.join([f"{hex(head)}: {idc.GetDisasm(head)}" for head in idautils.FuncItems(func_ea)])))
+            f.write('\n      </disassembly>\n')
+
+        # Pseudocode
         if decomp_available:
-            f.write("\n--- Pseudocode ---\n")
             try:
                 cfunc = ida_hexrays.decompile(func_ea)
                 if cfunc:
-                    for line_obj in cfunc.get_pseudocode():
-                        f.write(ida_lines.tag_remove(line_obj.line) + "\n")
-                else: f.write("// Decompilation failed\n")
-            except Exception as e: f.write(f"// Decompilation error: {e}\n")
+                    code = '\n'.join([ida_lines.tag_remove(line_obj.line) for line_obj in cfunc.get_pseudocode()])
+                    f.write(f'      <pseudocode>\n{cdata(code)}\n      </pseudocode>\n')
+                else:
+                    f.write('      <pseudocode status="failed" />\n')
+            except Exception as e:
+                f.write(f'      <pseudocode status="error">{cdata(str(e))}</pseudocode>\n')
+        
+        f.write('    </function>\n')
+    f.write('  </functions>\n')
 
 def main():
-    parser = argparse.ArgumentParser(description="Dump IDA Pro analysis to text for LLM.")
+    parser = argparse.ArgumentParser(description="Dump IDA Pro analysis to XML for LLM.")
     parser.add_argument("binary", help="Path to the binary file")
     
     parser.add_argument("--disasm", action="store_true", help="Include disassembly code")
-    parser.add_argument("-p", "--prompt", action="store_true", help="Prepend Master CTF Prompt and save as .md")
+    parser.add_argument("-p", "--prompt", action="store_true", help="Include Master CTF Prompt in the XML")
     parser.add_argument("-d", "--description", help="Challenge description to insert into the prompt", type=str)
-
+    
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--minimal", action="store_true", help="Minimal output: No data sections, no boilerplate.")
     group.add_argument("--all", action="store_true", help="Dump EVERYTHING: All data/structs, all functions.")
@@ -337,29 +318,22 @@ def main():
     ida_auto.auto_wait()
 
     output_dir = os.path.dirname(target)
-    # Determine extension based on Prompt flag
-    ext = ".md" if args.prompt else ".txt"
-    output_name = f"{os.path.basename(target)}_dump{ext}"
+    output_name = f"{os.path.basename(target)}_dump.xml"
     output_path = os.path.join(output_dir, output_name)
-    
-    print(f"[*] Writing dump to: {output_path}")
+    print(f"[*] Writing XML dump to: {output_path}")
     
     with open(output_path, "w", encoding="utf-8") as f:
-        # 1. Write Prompt (if requested)
-        if args.prompt:
-            f.write(MASTER_PROMPT_TEXT)
-            if args.description:
-                f.write(f"**[CHALLENGE DESCRIPTION]**\n{args.description}\n\n")
-            f.write("**[IDA DUMP START]**\n")
-            f.write("```text\n") # Start Code Block
-
-        # 2. Write Dump Headers
-        f.write(f"Dump generated for: {os.path.basename(target)}\n")
-        f.write(f"Timestamp: {time.ctime()}\n")
-        mitigations = get_mitigations()
-        f.write(f"Security Mitigations: {mitigations}\n")
+        f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+        f.write('<ctf_analysis>\n')
+        f.write(f'  <metadata>\n    <filename>{os.path.basename(target)}</filename>\n    <timestamp>{time.ctime()}</timestamp>\n    <mitigations>{get_mitigations()}</mitigations>\n  </metadata>\n')
         
-        # 3. Write Dump Body
+        # Embed prompt instructions as XML data
+        if args.prompt:
+            f.write(f'  <system_prompt>\n    {cdata(MASTER_PROMPT_TEXT)}\n  </system_prompt>\n')
+        
+        if args.description:
+            f.write(f'  <challenge_description>\n    {cdata(args.description)}\n  </challenge_description>\n')
+        
         if should_dump_data:
             print("[*] Dumping memory layout and data sections...")
             dump_segments(f)
@@ -370,10 +344,8 @@ def main():
             dump_global_data(f)
         
         dump_functions(f, dump_all_functions=dump_all_funcs, include_disasm=args.disasm)
-
-        # 4. Close Code Block (if prompt mode)
-        if args.prompt:
-            f.write("\n```\n")
+        
+        f.write('</ctf_analysis>\n')
 
     print("[*] Closing database...")
     idapro.close_database(save=False)
